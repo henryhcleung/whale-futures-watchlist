@@ -1,3 +1,4 @@
+require('dotenv').config();
 const WebSocket = require('ws');
 const express = require('express');
 const http = require('http');
@@ -10,7 +11,6 @@ const { getOpenInterest, getFundingRate } = require('./binanceApi');
 const {
   symbols,
   largeTradeThresholds,
-  serverPort,
   tradeWindowsMs,
   rsiPeriods,
   emaShortPeriod,
@@ -26,6 +26,8 @@ const {
   volatilityLookback,
   telegram,
 } = config;
+
+const serverPort = process.env.PORT || config.serverPort || 3000;
 
 const app = express();
 const server = http.createServer(app);
@@ -368,8 +370,7 @@ async function fetchAllNews() {
   });
 }
 
-// Binance WebSocket for aggregated trades
-
+// Binance WebSocket connection
 const wsUrl = `wss://fstream.binance.com/stream?streams=${symbols.map(s => s.toLowerCase() + '@aggTrade').join('/')}`;
 let ws = new WebSocket(wsUrl);
 
@@ -479,14 +480,10 @@ io.on('connection', (socket) => {
   });
 });
 
-// Start server
-
 server.listen(serverPort, async () => {
   console.log(`Server running at http://localhost:${serverPort}`);
   await sendTelegramMessage('🚀 Binance Whale Futures Watchlist monitoring started.');
 });
-
-// Graceful shutdown
 
 async function shutdown() {
   console.log('Shutting down server...');

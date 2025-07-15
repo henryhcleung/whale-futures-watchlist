@@ -1,20 +1,19 @@
 const socket = io();
-const PositionManager = require('./PositionManager'); // Client-side import (assumes bundling)
 
 const summaryBody = document.getElementById('summaryBody');
 const largeTradesDiv = document.getElementById('largeTrades');
 const insightsDiv = document.getElementById('insights');
+const newsContainer = document.getElementById('newsContainer');
 
 const MAX_LARGE_TRADES = 50;
 
 const config = {
-  netVolumeThreshold: 50, // Fallback, overridden by server
+  netVolumeThreshold: 50,
   rsiOverbought: 70,
   rsiOversold: 30,
 };
 
 const largeTrades = [];
-const positionManager = new PositionManager(); // Initialize with default portfolio balance
 
 function formatNumber(num, decimals = 2) {
   return num !== null && num !== undefined ? num.toFixed(decimals) : 'N/A';
@@ -131,6 +130,14 @@ socket.on('summary', (data) => {
   generateInsights(data);
 });
 
-socket.on('largeTrade', (trade) => {
-  addLargeTradeAlert(trade);
+socket.on('largeTrade', addLargeTradeAlert);
+
+socket.on('news', updateNews);
+
+socket.on('connect', () => {
+  insightsDiv.textContent = 'Connected. Waiting for data...';
+});
+
+socket.on('disconnect', () => {
+  insightsDiv.textContent = 'Disconnected from server.';
 });
