@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Binance Whale Futures Watchlist</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #121212;
+      color: #eee;
+      margin: 20px;
+    }
+    h1 {
+      color: #f0b90b;
+      margin-bottom: 10px;
+      font-weight: bold;
+    }
+    #insights {
+      margin-bottom: 15px;
+      font-size: 14px;
+      white-space: pre-wrap;
+      font-weight: normal;
+      color: #eee;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+      font-size: 14px;
+      color: #eee;
+    }
+    th, td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #333;
+      text-align: center;
+      vertical-align: middle;
+    }
+    th {
+      background: #222;
+      font-weight: bold;
+    }
+    .positive {
+      color: #4caf50;
+      font-weight: bold;
+    }
+    .negative {
+      color: #e53935;
+      font-weight: bold;
+    }
+    .rsi-high {
+      color: #e53935;
+    }
+    .rsi-low {
+      color: #4caf50;
+    }
+    #largeTrades {
+      max-height: 200px;
+      overflow-y: auto;
+      background: #222;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 13px;
+      margin-bottom: 20px;
+      white-space: pre-wrap;
+      font-family: monospace;
+    }
+    #newsContainer {
+      background: #222;
+      padding: 10px;
+      border-radius: 5px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 14px;
+      color: #eee;
+      margin-bottom: 20px;
+    }
+    #newsContainer a {
+      color: #eee;
+      text-decoration: none;
+      font-weight: normal;
+    }
+    #newsContainer a:hover {
+      text-decoration: underline;
+    }
+    .news-symbol {
+      color: #f0b90b; /* yellow */
+      font-weight: bold;
+      margin-right: 6px;
+    }
+    .news-title {
+      color: #eee; /* light gray */
+      font-weight: normal;
+    }
+    .sentiment-bullish {
+      color: #4caf50;
+      font-weight: bold;
+      margin-left: 6px;
+    }
+    .sentiment-bearish {
+      color: #e53935;
+      font-weight: bold;
+      margin-left: 6px;
+    }
+    .sentiment-neutral {
+      color: #ffb74d;
+      font-weight: bold;
+      margin-left: 6px;
+    }
+    .large-trade-buy {
+      color: #4caf50;
+      font-weight: bold;
+    }
+    .large-trade-sell {
+      color: #e53935;
+      font-weight: bold;
+    }
+    small.time-ago {
+      color: #999;
+      margin-left: 6px;
+      font-size: 12px;
+      font-weight: normal;
+    }
+  </style>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <h1>Binance Whale Futures Watchlist</h1>
+  <div id="insights">Loading insights...</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Last Price</th>
+        <th>Buy Volume (3m)</th>
+        <th>Sell Volume (3m)</th>
+        <th>Net Volume (3m)</th>
+        <th>RSI (1m)</th>
+        <th>RSI (3m)</th>
+        <th>RSI (5m)</th>
+        <th>MACD</th>
+        <th>Signal Line</th>
+        <th>BB Lower</th>
+        <th>BB Middle</th>
+        <th>BB Upper</th>
+        <th>ATR</th>
+        <th>Open Interest</th>
+        <th>Funding Rate</th>
+        <th>Signal</th>
+      </tr>
+    </thead>
+    <tbody id="summaryBody"></tbody>
+  </table>
+
+  <h2>Large Trades (≥ threshold)</h2>
+  <div id="largeTrades">No large trades yet.</div>
+
+  <h2>Latest News & Sentiment</h2>
+  <div id="newsContainer">Loading news...</div>
+
+  <script>
+    const socket = io();
+
+    const summaryBody = document.getElementById('summaryBody');
+    const insightsDiv = document.getElementById('insights');
+    const largeTradesDiv = document.getElementById('largeTrades');
+    const newsContainer = document.getElementById('newsContainer');
+
+    function formatNumber(num, decimals = 2) {
+      if (num === null || num === undefined) return 'N/A';
+      return num.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    }
+
+    function formatDuration(seconds) {
+      if (seconds < 0) return '';
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return `${m}m ${s}s`;
+    }
+
+    function timeSince(date) {
+      const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      return `${hours}h ago`;
+    }
+
+    function renderSummary(data) {
+      summaryBody.innerHTML = '';
+      data.summary.forEach(s => {
+        const {
+          symbol, lastPrice, buyVolume, sellVolume, netVolume,
+          rsiShort, rsiMain, rsiLong, macd, signal, bb,
+          openInterest, fundingRate, atr,
+        } = s;
+
+        const netClass = netVolume > 0 ? 'positive' : netVolume < 0 ? 'negative' : '';
+        const rsiClassShort = rsiShort > 70 ? 'rsi-high' : rsiShort < 30 ? 'rsi-low' : '';
+        const rsiClassMain = rsiMain > 70 ? 'rsi-high' : rsiMain < 30 ? 'rsi-low' : '';
+        const rsiClassLong = rsiLong > 70 ? 'rsi-high' : rsiLong < 30 ? 'rsi-low' : '';
+        const macdClass = macd > 0 ? 'positive' : macd < 0 ? 'negative' : '';
+        const signalClass = signal > 0 ? 'positive' : signal < 0 ? 'negative' : '';
+        const atrClass = atr > 0 ? 'positive' : '';
+        const openInterestClass = openInterest > 0 ? 'positive' : '';
+        const fundingRateClass = fundingRate > 0 ? 'positive' : fundingRate < 0 ? 'negative' : '';
+
+        const bbLowerClass = bb && lastPrice < bb.lower ? 'negative' : '';
+        const bbUpperClass = bb && lastPrice > bb.upper ? 'positive' : '';
+
+        const signalText = data.signals[symbol] || 'NEUTRAL';
+        const signalColor = signalText === 'LONG' ? 'positive' : signalText === 'SHORT' ? 'negative' : '';
+
+        const duration = data.signalDurations[symbol] || 0;
+        const confidence = data.signalConfidences[symbol] || 0;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${symbol}</td>
+          <td>${formatNumber(lastPrice, 4)}</td>
+          <td class="positive">${formatNumber(buyVolume)}</td>
+          <td class="negative">${formatNumber(sellVolume)}</td>
+          <td class="${netClass}">${formatNumber(netVolume)}</td>
+          <td class="${rsiClassShort}">${formatNumber(rsiShort)}</td>
+          <td class="${rsiClassMain}">${formatNumber(rsiMain)}</td>
+          <td class="${rsiClassLong}">${formatNumber(rsiLong)}</td>
+          <td class="${macdClass}">${formatNumber(macd, 4)}</td>
+          <td class="${signalClass}">${formatNumber(signal, 4)}</td>
+          <td class="${bbLowerClass}">${bb ? formatNumber(bb.lower, 4) : 'N/A'}</td>
+          <td>${bb ? formatNumber(bb.middle, 4) : 'N/A'}</td>
+          <td class="${bbUpperClass}">${bb ? formatNumber(bb.upper, 4) : 'N/A'}</td>
+          <td class="${atrClass}">${formatNumber(atr, 4)}</td>
+          <td class="${openInterestClass}">${openInterest !== null && openInterest !== undefined ? openInterest.toLocaleString() : 'N/A'}</td>
+          <td class="${fundingRateClass}">${fundingRate !== null && fundingRate !== undefined ? (fundingRate * 100).toFixed(4) + '%' : 'N/A'}</td>
+          <td class="${signalColor}">${signalText} (${formatDuration(duration)}, ${(confidence * 100).toFixed(0)}%)</td>
+        `;
+        summaryBody.appendChild(tr);
+      });
+    }
+
+    function addLargeTradeAlert({ symbol, side, price, quantity, time }) {
+      if (largeTradesDiv.textContent === 'No large trades yet.') {
+        largeTradesDiv.textContent = '';
+      }
+      const div = document.createElement('div');
+      div.textContent = `${time} - ${symbol} ${side} ${quantity.toFixed(2)} @ ${price.toFixed(4)}`;
+      div.className = side === 'BUY' ? 'large-trade-buy' : 'large-trade-sell';
+      largeTradesDiv.prepend(div);
+      if (largeTradesDiv.children.length > 50) {
+        largeTradesDiv.removeChild(largeTradesDiv.lastChild);
+      }
+    }
+
+    function generateInsights(data) {
+      if (!data.summary.length) {
+        insightsDiv.textContent = 'No data available.';
+        return;
+      }
+      const lines = data.summary.map(s => {
+        const sig = data.signals[s.symbol] || 'NEUTRAL';
+        const dur = data.signalDurations[s.symbol] || 0;
+        const conf = data.signalConfidences[s.symbol] || 0;
+        let advice = 'Caution advised. Monitor for stronger signals.';
+        if (sig === 'LONG') {
+          advice = `Consider LONG position (Confidence: ${(conf * 100).toFixed(0)}%).`;
+        } else if (sig === 'SHORT') {
+          advice = `Consider SHORT position (Confidence: ${(conf * 100).toFixed(0)}%).`;
+        }
+        return `${s.symbol}: ${sig} signal (active ${formatDuration(dur)}). ${advice}`;
+      });
+      insightsDiv.textContent = lines.join('\n');
+    }
+
+    // News symbol detection and sentiment classification
+    function classifySentiment(text) {
+      const bullishWords = ['bull', 'surge', 'rise', 'gain', 'breakout', 'rally', 'soar', 'pump', 'all-time high', 'record', 'uptrend', 'moon'];
+      const bearishWords = ['bear', 'drop', 'fall', 'decline', 'crash', 'dump', 'plunge', 'downturn', 'correction', 'selloff', 'dip', 'slump', 'downtrend'];
+
+      const lowerText = text.toLowerCase();
+      for (const word of bullishWords) {
+        if (lowerText.includes(word)) return 'bullish';
+      }
+      for (const word of bearishWords) {
+        if (lowerText.includes(word)) return 'bearish';
+      }
+      return 'neutral';
+    }
+
+    function detectSymbol(text) {
+      const knownSymbols = ['BTC', 'ETH', 'BNB', 'SOL', 'ADA', 'XRP', 'DOGE', 'DOT', 'LTC', 'LINK'];
+      const upperText = text.toUpperCase();
+      for (const sym of knownSymbols) {
+        if (upperText.includes(sym)) return sym + 'USDT';
+      }
+      return 'WHOLE MARKET';
+    }
+
+    function updateNews(newsItems) {
+      if (!newsItems || newsItems.length === 0) {
+        newsContainer.textContent = 'No recent news.';
+        return;
+      }
+      newsContainer.innerHTML = '';
+      newsItems.forEach(item => {
+        const div = document.createElement('div');
+        div.style.marginBottom = '8px';
+
+        const symbol = item.symbol && item.symbol !== 'UNKNOWN' ? item.symbol : detectSymbol(item.title + ' ' + (item.body || ''));
+        const sentiment = item.sentiment && item.sentiment !== 'neutral' ? item.sentiment : classifySentiment(item.title + ' ' + (item.body || ''));
+
+        let sentimentClass = 'sentiment-neutral';
+        if (sentiment === 'bullish') sentimentClass = 'sentiment-bullish';
+        else if (sentiment === 'bearish') sentimentClass = 'sentiment-bearish';
+
+        const timeText = item.time ? `<small class="time-ago">(${timeSince(new Date(item.time))})</small>` : '';
+
+        div.innerHTML = `
+          <span class="news-symbol">${symbol}:</span>
+          <a href="${item.url}" target="_blank" rel="noopener" class="news-title">${item.title}</a>
+          <span class="${sentimentClass}">[${sentiment}]</span>
+          ${timeText}
+        `;
+        newsContainer.appendChild(div);
+      });
+    }
+
+    socket.on('summary', (data) => {
+      renderSummary(data);
+      generateInsights(data);
+    });
+
+    socket.on('largeTrade', addLargeTradeAlert);
+
+    socket.on('news', updateNews);
+
+    socket.on('connect', () => {
+      insightsDiv.textContent = 'Connected. Waiting for data...';
+    });
+
+    socket.on('disconnect', () => {
+      insightsDiv.textContent = 'Disconnected from server.';
+    });
+  </script>
+</body>
+</html>
