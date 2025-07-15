@@ -122,7 +122,7 @@
     }
   </style>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js" defer></script>
 </head>
 <body>
   <h1>Binance Whale Futures Watchlist</h1>
@@ -326,6 +326,7 @@
       });
     }
 
+    // Socket.io event handlers
     socket.on('summary', (data) => {
       renderSummary(data);
       generateInsights(data);
@@ -337,10 +338,12 @@
 
     socket.on('connect', () => {
       insightsDiv.textContent = 'Connected. Waiting for data...';
+      console.log('Socket connected');
     });
 
     socket.on('disconnect', () => {
       insightsDiv.textContent = 'Disconnected from server.';
+      console.log('Socket disconnected');
     });
   </script>
 </body>

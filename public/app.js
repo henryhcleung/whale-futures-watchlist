@@ -95,49 +95,39 @@ function generateInsights(data) {
     const dur = signalDurations[s.symbol] || 0;
     const conf = signalConfidences[s.symbol] || 0;
     let advice = 'Caution advised. Monitor for stronger signals.';
-    let details = [];
-
     if (sig === 'LONG') {
       advice = `Consider LONG position (Confidence: ${(conf * 100).toFixed(0)}%).`;
-      details.push(`RSI: ${formatNumber(s.rsiMain)} (Oversold), MACD: ${formatNumber(s.macd)} > ${formatNumber(s.signal)}, Net Volume: ${formatNumber(s.netVolume)}`);
-      if (s.fundingRate > 0.01) details.push(`Warning: High funding rate (${(s.fundingRate * 100).toFixed(2)}%) suggests crowded longs.`);
-      if (positionManager.getPosition(s.symbol) === null && conf > 0.5) {
-        positionManager.openPosition(s.symbol, s.lastPrice, conf, s.atr);
-      }
     } else if (sig === 'SHORT') {
       advice = `Consider SHORT position (Confidence: ${(conf * 100).toFixed(0)}%).`;
-      details.push(`RSI: ${formatNumber(s.rsiMain)} (Overbought), MACD: ${formatNumber(s.macd)} < ${formatNumber(s.signal)}, Net Volume: ${formatNumber(s.netVolume)}`);
-      if (s.fundingRate < -0.01) details.push(`Warning: High negative funding rate (${(s.fundingRate * 100).toFixed(2)}%) suggests crowded shorts.`);
-      if (positionManager.getPosition(s.symbol) === null && conf > 0.5) {
-        positionManager.openPosition(s.symbol, s.lastPrice, conf, s.atr);
-      }
     }
-
-    if (positionManager.getPosition(s.symbol)) {
-      positionManager.updatePrice(s.symbol, s.lastPrice);
-      const pos = positionManager.getPosition(s.symbol);
-      details.push(`Open Position: Size: ${pos.positionSize}, Stop: ${formatNumber(pos.stopLossPrice)}, Take Profit: ${formatNumber(pos.takeProfitPrice)}`);
-    }
-
-    return `${s.symbol}: ${sig} signal (active ${formatDuration(dur)}). ${advice}\n${details.join('\n')}`;
+    return `${s.symbol}: ${sig} signal (active ${formatDuration(dur)}). ${advice}`;
   });
 
   insightsDiv.textContent = lines.join('\n\n');
 }
 
+socket.on('connect', () => {
+  console.log('Socket connected');
+  insightsDiv.textContent = 'Connected. Waiting for data...';
+});
+
 socket.on('summary', (data) => {
+  console.log('Summary received:', data);
   renderSummary(data);
   generateInsights(data);
 });
 
-socket.on('largeTrade', addLargeTradeAlert);
+socket.on('largeTrade', (data) => {
+  console.log('Large trade received:', data);
+  addLargeTradeAlert(data);
+});
 
-socket.on('news', updateNews);
-
-socket.on('connect', () => {
-  insightsDiv.textContent = 'Connected. Waiting for data...';
+socket.on('news', (data) => {
+  console.log('News received:', data);
+  updateNews(data); // if you have a function to update news
 });
 
 socket.on('disconnect', () => {
+  console.log('Socket disconnected');
   insightsDiv.textContent = 'Disconnected from server.';
 });

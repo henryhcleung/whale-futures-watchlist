@@ -52,13 +52,13 @@ async function sendTelegramMessage(text) {
       text,
       parse_mode: 'Markdown',
     });
-    console.log('Telegram message sent:', text);
+    console.info('Telegram message sent');
   } catch (err) {
     console.error('Telegram send error:', err.response?.data || err.message);
   }
 }
 
-// Indicator calculations (EMA, MACD, RSI, BB, ATR) - as you provided, unchanged
+// Indicator calculations (EMA, MACD, RSI, BB, ATR)
 
 function calculateEMA(prices, period, prevEMA = null) {
   const k = 2 / (period + 1);
@@ -203,7 +203,7 @@ async function enrichSummaryWithOIandFunding(summary) {
     try {
       item.openInterest = await getOpenInterest(item.symbol);
       item.fundingRate = await getFundingRate(item.symbol);
-    } catch (e) {
+    } catch {
       item.openInterest = null;
       item.fundingRate = null;
     }
@@ -309,7 +309,7 @@ function generateSignal(summary) {
   return { signals, signalDurations, signalConfidences };
 }
 
-// News fetching (CryptoCompare + NewsAPI.org) - unchanged from your code
+// News fetching (CryptoCompare + NewsAPI.org)
 
 async function fetchCryptoCompareNews() {
   try {
@@ -372,61 +372,66 @@ async function fetchAllNews() {
 
 // Binance WebSocket connection
 const wsUrl = `wss://fstream.binance.com/stream?streams=${symbols.map(s => s.toLowerCase() + '@aggTrade').join('/')}`;
-let ws = new WebSocket(wsUrl);
+let ws;
 
-ws.on('open', () => {
-  console.log('WebSocket connected');
-});
+function connectWebSocket() {
+  ws = new WebSocket(wsUrl);
 
-ws.on('message', (data) => {
-  try {
-    const message = JSON.parse(data);
-    if (!message || !message.data || !message.stream) return;
+  ws.on('open', () => {
+    console.info('WebSocket connected');
+  });
 
-    if (message.stream.endsWith('@aggTrade')) {
-      const trade = message.data;
-      const symbol = trade.s.toUpperCase();
-      const price = parseFloat(trade.p);
-      const quantity = parseFloat(trade.q);
-      const side = trade.m ? 'SELL' : 'BUY';
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(data);
 
-      if (tradesMap.has(symbol)) {
-        tradesMap.get(symbol).push({
-          price,
-          quantity,
-          side,
-          timestamp: trade.T,
-        });
+      if (!message || !message.data || !message.stream) return;
+
+      if (message.stream.endsWith('@aggTrade')) {
+        const trade = message.data;
+        const symbol = trade.s.toUpperCase();
+        const price = parseFloat(trade.p);
+        const quantity = parseFloat(trade.q);
+        const side = trade.m ? 'SELL' : 'BUY';
+
+        if (tradesMap.has(symbol)) {
+          tradesMap.get(symbol).push({
+            price,
+            quantity,
+            side,
+            timestamp: trade.T,
+          });
+        }
+
+        if (quantity >= (largeTradeThresholds[symbol] || 100)) {
+          io.emit('largeTrade', {
+            symbol,
+            side,
+            price,
+            quantity,
+            time: new Date(trade.T).toLocaleTimeString(),
+          });
+        }
       }
-
-      if (quantity >= largeTradeThresholds[symbol]) {
-        io.emit('largeTrade', {
-          symbol,
-          side,
-          price,
-          quantity,
-          time: new Date(trade.T).toLocaleTimeString(),
-        });
-      }
+    } catch (e) {
+      console.error('WS message parse error:', e);
     }
-  } catch (e) {
-    console.error('WS message parse error:', e);
-  }
-});
+  });
 
-ws.on('close', () => {
-  console.log('WebSocket closed, reconnecting in 5s...');
-  setTimeout(() => {
-    ws = new WebSocket(wsUrl);
-  }, 5000);
-});
+  ws.on('close', () => {
+    console.warn('WebSocket closed, reconnecting in 5s...');
+    setTimeout(connectWebSocket, 5000);
+  });
 
-ws.on('error', (err) => {
-  console.error('WebSocket error:', err);
-  ws.close();
-});
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err);
+    ws.close();
+  });
+}
 
-// Main loop
+connectWebSocket();
+
+// Main loop emitting summary, news, and telegram notifications
 
 setInterval(async () => {
   try {
@@ -443,7 +448,6 @@ setInterval(async () => {
       io.emit('news', news);
     }
 
-    // Telegram notifications on signal changes
     if (telegram.enabled) {
       for (const symbol of Object.keys(signals)) {
         const currentSignal = signals[symbol];
@@ -471,22 +475,20 @@ setInterval(async () => {
   }
 }, 1000);
 
-// Socket.IO connection
-
 io.on('connection', (socket) => {
-  console.log('Client connected');
+  console.info('Client connected');
   socket.on('disconnect', () => {
-    console.log('Client disconnected');
+    console.info('Client disconnected');
   });
 });
 
 server.listen(serverPort, async () => {
-  console.log(`Server running at http://localhost:${serverPort}`);
+  console.info(`Server running at http://localhost:${serverPort}`);
   await sendTelegramMessage('🚀 Binance Whale Futures Watchlist monitoring started.');
 });
 
 async function shutdown() {
-  console.log('Shutting down server...');
+  console.info('Shutting down server...');
   await sendTelegramMessage('🛑 Binance Whale Futures Watchlist monitoring stopped.');
   process.exit(0);
 }
