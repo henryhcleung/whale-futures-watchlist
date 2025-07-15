@@ -8,14 +8,18 @@ module.exports = {
   },
   serverPort: 3000,
   tradeWindowsMs: {
-    short: 60 * 1000,
-    main: 3 * 60 * 1000,
-    long: 5 * 60 * 1000,
+    short: 60 * 1000,           // 1 minute
+    main: 3 * 60 * 1000,       // 3 minutes
+    long: 5 * 60 * 1000,       // 5 minutes
+    extended: 30 * 60 * 1000,  // 30 minutes (new)
+    ultraLong: 60 * 60 * 1000, // 1 hour (new)
   },
   rsiPeriods: {
     short: 14,
     main: 20,
     long: 26,
+    extended: 30,   // new
+    ultraLong: 50,  // new
   },
   emaShortPeriod: 12,
   emaLongPeriod: 26,

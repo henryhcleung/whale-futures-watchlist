@@ -44,6 +44,48 @@ const signalState = {};
 
 const positionManager = new PositionManager();
 
+const redisClient = require('./redisClient');
+
+const TRADES_KEY = 'tradesMap';
+const SIGNAL_STATE_KEY = 'signalState';
+
+// Load persisted data from Redis on startup
+(async () => {
+  try {
+    const tradesData = await redisClient.get(TRADES_KEY);
+    if (tradesData) {
+      const tradesObj = JSON.parse(tradesData);
+      for (const symbol in tradesObj) {
+        tradesMap.set(symbol, tradesObj[symbol]);
+      }
+      console.info('Loaded tradesMap from Redis');
+    }
+    const signalData = await redisClient.get(SIGNAL_STATE_KEY);
+    if (signalData) {
+      Object.assign(signalState, JSON.parse(signalData));
+      console.info('Loaded signalState from Redis');
+    }
+  } catch (err) {
+    console.error('Error loading from Redis:', err);
+  }
+})();
+
+// Periodically persist tradesMap and signalState to Redis every 30 seconds
+setInterval(async () => {
+  try {
+    // Convert tradesMap (Map) to plain object for JSON serialization
+    const tradesObj = {};
+    for (const [symbol, trades] of tradesMap.entries()) {
+      tradesObj[symbol] = trades;
+    }
+    await redisClient.set(TRADES_KEY, JSON.stringify(tradesObj));
+    await redisClient.set(SIGNAL_STATE_KEY, JSON.stringify(signalState));
+    console.info('Persisted tradesMap and signalState to Redis');
+  } catch (err) {
+    console.error('Error persisting to Redis:', err);
+  }
+}, 30000);
+
 async function sendTelegramMessage(text) {
   if (!telegram.enabled) return;
   try {
@@ -143,8 +185,9 @@ function calculateATR(prices, period = volatilityLookback) {
 
 function cleanOldTrades() {
   const now = Date.now();
+  const maxWindow = Math.max(...Object.values(tradeWindowsMs));
   for (const [symbol, trades] of tradesMap.entries()) {
-    tradesMap.set(symbol, trades.filter(t => now - t.timestamp <= tradeWindowsMs.long));
+    tradesMap.set(symbol, trades.filter(t => now - t.timestamp <= maxWindow));
   }
 }
 
@@ -168,10 +211,14 @@ function aggregateData() {
 
     const pricesShort = aggregateTrades(symbol, tradeWindowsMs.short).map(t => t.price);
     const pricesLong = aggregateTrades(symbol, tradeWindowsMs.long).map(t => t.price);
+    const pricesExtended = aggregateTrades(symbol, tradeWindowsMs.extended).map(t => t.price);
+    const pricesUltraLong = aggregateTrades(symbol, tradeWindowsMs.ultraLong).map(t => t.price);
 
     const rsiShort = calculateRSI(pricesShort, rsiPeriods.short);
     const rsiMain = calculateRSI(pricesMain, rsiPeriods.main);
     const rsiLong = calculateRSI(pricesLong, rsiPeriods.long);
+    const rsiExtended = calculateRSI(pricesExtended, rsiPeriods.extended);
+    const rsiUltraLong = calculateRSI(pricesUltraLong, rsiPeriods.ultraLong);
 
     const macdResult = calculateMACD(pricesMain, symbol);
     const macd = macdResult ? macdResult.macd : null;
@@ -189,6 +236,8 @@ function aggregateData() {
       rsiShort,
       rsiMain,
       rsiLong,
+      rsiExtended,
+      rsiUltraLong,
       macd,
       signal,
       bb,
@@ -196,6 +245,13 @@ function aggregateData() {
     });
   }
   return summary;
+}
+
+function classifyOrder(quantity, symbol) {
+  const largeThreshold = largeTradeThresholds[symbol] || 100;
+  if (quantity >= largeThreshold * 5) return 'INSTITUTION';
+  if (quantity >= largeThreshold) return 'WHALE';
+  return 'RETAIL';
 }
 
 async function enrichSummaryWithOIandFunding(summary) {
@@ -382,41 +438,44 @@ function connectWebSocket() {
   });
 
   ws.on('message', (data) => {
-    try {
-      const message = JSON.parse(data);
+  try {
+    const message = JSON.parse(data);
 
-      if (!message || !message.data || !message.stream) return;
+    if (!message || !message.data || !message.stream) return;
 
-      if (message.stream.endsWith('@aggTrade')) {
-        const trade = message.data;
-        const symbol = trade.s.toUpperCase();
-        const price = parseFloat(trade.p);
-        const quantity = parseFloat(trade.q);
-        const side = trade.m ? 'SELL' : 'BUY';
+    if (message.stream.endsWith('@aggTrade')) {
+      const trade = message.data;
+      const symbol = trade.s.toUpperCase();
+      const price = parseFloat(trade.p);
+      const quantity = parseFloat(trade.q);
+      const side = trade.m ? 'SELL' : 'BUY';
+      const classification = classifyOrder(quantity, symbol);
 
-        if (tradesMap.has(symbol)) {
-          tradesMap.get(symbol).push({
-            price,
-            quantity,
-            side,
-            timestamp: trade.T,
-          });
-        }
-
-        if (quantity >= (largeTradeThresholds[symbol] || 100)) {
-          io.emit('largeTrade', {
-            symbol,
-            side,
-            price,
-            quantity,
-            time: new Date(trade.T).toLocaleTimeString(),
-          });
-        }
+      if (tradesMap.has(symbol)) {
+        tradesMap.get(symbol).push({
+          price,
+          quantity,
+          side,
+          timestamp: trade.T,
+          classification,
+        });
       }
-    } catch (e) {
-      console.error('WS message parse error:', e);
+
+      if (quantity >= (largeTradeThresholds[symbol] || 100)) {
+        io.emit('largeTrade', {
+          symbol,
+          side,
+          price,
+          quantity,
+          classification,
+          time: new Date(trade.T).toLocaleTimeString(),
+        });
+      }
     }
-  });
+  } catch (e) {
+    console.error('WS message parse error:', e);
+  }
+});
 
   ws.on('close', () => {
     console.warn('WebSocket closed, reconnecting in 5s...');

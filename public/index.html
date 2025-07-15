@@ -240,18 +240,18 @@
       });
     }
 
-    function addLargeTradeAlert({ symbol, side, price, quantity, time }) {
-      if (largeTradesDiv.textContent === 'No large trades yet.') {
-        largeTradesDiv.textContent = '';
-      }
-      const div = document.createElement('div');
-      div.textContent = `${time} - ${symbol} ${side} ${quantity.toFixed(2)} @ ${price.toFixed(4)}`;
-      div.className = side === 'BUY' ? 'large-trade-buy' : 'large-trade-sell';
-      largeTradesDiv.prepend(div);
-      if (largeTradesDiv.children.length > 50) {
-        largeTradesDiv.removeChild(largeTradesDiv.lastChild);
-      }
-    }
+    function addLargeTradeAlert({ symbol, side, price, quantity, time, classification }) {
+  if (largeTradesDiv.textContent === 'No large trades yet.') {
+    largeTradesDiv.textContent = '';
+  }
+  const div = document.createElement('div');
+  div.textContent = `${time} - ${symbol} ${side} ${quantity.toFixed(2)} @ ${price.toFixed(4)} [${classification}]`;
+  div.className = side === 'BUY' ? 'large-trade-buy' : 'large-trade-sell';
+  largeTradesDiv.prepend(div);
+  if (largeTradesDiv.children.length > 50) {
+    largeTradesDiv.removeChild(largeTradesDiv.lastChild);
+  }
+}
 
     function generateInsights(data) {
       if (!data.summary.length) {
@@ -328,9 +328,20 @@
 
     // Socket.io event handlers
     socket.on('summary', (data) => {
-      renderSummary(data);
-      generateInsights(data);
-    });
+  localStorage.setItem('summaryData', JSON.stringify(data));
+  renderSummary(data);
+  generateInsights(data);
+});
+
+// On page load, load cached data if available
+window.addEventListener('load', () => {
+  const cached = localStorage.getItem('summaryData');
+  if (cached) {
+    const data = JSON.parse(cached);
+    renderSummary(data);
+    generateInsights(data);
+  }
+});
 
     socket.on('largeTrade', addLargeTradeAlert);
 
