@@ -8,6 +8,13 @@ const config = require('./config');
 const PositionManager = require('./PositionManager');
 const { getOpenInterest, getFundingRate } = require('./binanceApi');
 
+const oiHistory = {}; // { symbol: [ { timestamp, value } ] }
+const fundingRateHistory = {}; // { symbol: [ { timestamp, value } ] }
+const trendLookbackMs = 15 * 60 * 1000; // 15 minutes
+const telegramAlertHistory = {}; // { symbol: [ timestamps ] }
+const TELEGRAM_ALERT_LIMIT = 3;
+const TELEGRAM_ALERT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
 const {
   symbols,
   largeTradeThresholds,
@@ -28,7 +35,6 @@ const {
 } = config;
 
 const serverPort = process.env.PORT || config.serverPort || 3000;
-
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
@@ -73,7 +79,6 @@ const SIGNAL_STATE_KEY = 'signalState';
 // Periodically persist tradesMap and signalState to Redis every 30 seconds
 setInterval(async () => {
   try {
-    // Convert tradesMap (Map) to plain object for JSON serialization
     const tradesObj = {};
     for (const [symbol, trades] of tradesMap.entries()) {
       tradesObj[symbol] = trades;
@@ -86,6 +91,27 @@ setInterval(async () => {
   }
 }, 30000);
 
+let cachedNews = [];
+
+async function updateNewsCache() {
+  try {
+    cachedNews = await fetchAllNews();
+    io.emit('news', cachedNews);
+    console.info(`News cache updated with ${cachedNews.length} items`);
+  } catch (err) {
+    console.error('Error updating news cache:', err);
+  }
+}
+
+// Call once on server start
+updateNewsCache();
+
+// Refresh news cache every 5 minutes
+setInterval(updateNewsCache, 5 * 60 * 1000);
+
+/**
+ * Send Telegram message with error handling
+ */
 async function sendTelegramMessage(text) {
   if (!telegram.enabled) return;
   try {
@@ -99,6 +125,18 @@ async function sendTelegramMessage(text) {
     console.error('Telegram send error:', err.response?.data || err.message);
   }
 }
+
+async function canSendTelegramAlert(symbol) {
+  const now = Date.now();
+  telegramAlertHistory[symbol] = telegramAlertHistory[symbol] || [];
+  telegramAlertHistory[symbol] = telegramAlertHistory[symbol].filter(ts => now - ts < TELEGRAM_ALERT_WINDOW_MS);
+  if (telegramAlertHistory[symbol].length >= TELEGRAM_ALERT_LIMIT) {
+    return false;
+  }
+  telegramAlertHistory[symbol].push(now);
+  return true;
+}
+
 
 // Indicator calculations (EMA, MACD, RSI, BB, ATR)
 
@@ -181,6 +219,15 @@ function calculateATR(prices, period = volatilityLookback) {
   return trSum / period;
 }
 
+// Calculate rolling standard deviation of prices as volatility proxy
+function calculateVolatilityProxy(prices, lookback) {
+  if (prices.length < lookback) return null;
+  const slice = prices.slice(-lookback);
+  const mean = slice.reduce((a, b) => a + b, 0) / lookback;
+  const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / lookback;
+  return Math.sqrt(variance);
+}
+
 // Trade data management
 
 function cleanOldTrades() {
@@ -197,6 +244,10 @@ function aggregateTrades(symbol, windowMs) {
   return trades.filter(t => now - t.timestamp <= windowMs);
 }
 
+
+/**
+ * Aggregate trade data and calculate indicators including volatility proxy
+ */
 function aggregateData() {
   const summary = [];
   for (const symbol of symbols.map(s => s.toUpperCase())) {
@@ -227,6 +278,9 @@ function aggregateData() {
     const bb = calculateBollingerBands(pricesMain);
     const atr = calculateATR(pricesMain);
 
+    // Calculate volatility proxy (rolling std dev)
+    const volatilityProxy = calculateVolatilityProxy(pricesMain, volatilityLookback);
+
     summary.push({
       symbol,
       lastPrice: +lastPrice.toFixed(4),
@@ -242,10 +296,12 @@ function aggregateData() {
       signal,
       bb,
       atr,
+      volatilityProxy,
     });
   }
   return summary;
 }
+
 
 function classifyOrder(quantity, symbol) {
   const largeThreshold = largeTradeThresholds[symbol] || 100;
@@ -255,64 +311,120 @@ function classifyOrder(quantity, symbol) {
 }
 
 async function enrichSummaryWithOIandFunding(summary) {
-  await Promise.all(summary.map(async (item) => {
+  for (const s of summary) {
     try {
-      item.openInterest = await getOpenInterest(item.symbol);
-      item.fundingRate = await getFundingRate(item.symbol);
-    } catch {
-      item.openInterest = null;
-      item.fundingRate = null;
+      const [oi, fr] = await Promise.all([
+        getOpenInterest(s.symbol),
+        getFundingRate(s.symbol),
+      ]);
+      s.openInterest = oi;
+      s.fundingRate = fr;
+
+      const now = Date.now();
+
+      // Store history
+      oiHistory[s.symbol] = oiHistory[s.symbol] || [];
+      fundingRateHistory[s.symbol] = fundingRateHistory[s.symbol] || [];
+
+      oiHistory[s.symbol].push({ timestamp: now, value: oi });
+      fundingRateHistory[s.symbol].push({ timestamp: now, value: fr });
+
+      // Remove old entries
+      oiHistory[s.symbol] = oiHistory[s.symbol].filter(e => now - e.timestamp <= trendLookbackMs);
+      fundingRateHistory[s.symbol] = fundingRateHistory[s.symbol].filter(e => now - e.timestamp <= trendLookbackMs);
+
+      // Calculate simple trend (delta over lookback)
+      const oiValues = oiHistory[s.symbol];
+      const frValues = fundingRateHistory[s.symbol];
+
+      s.openInterestTrend = oiValues.length > 1 ? oiValues[oiValues.length - 1].value - oiValues[0].value : 0;
+      s.fundingRateTrend = frValues.length > 1 ? frValues[frValues.length - 1].value - frValues[0].value : 0;
+
+    } catch (err) {
+      console.error(`Error fetching OI/Funding for ${s.symbol}:`, err);
+      s.openInterest = null;
+      s.fundingRate = null;
+      s.openInterestTrend = 0;
+      s.fundingRateTrend = 0;
     }
-  }));
+  }
 }
 
 // Signal generation with persistence and cooldown
-
 function generateSignal(summary) {
   const now = Date.now();
-  const signals = {};
-  const signalDurations = {};
-  const signalConfidences = {};
 
   summary.forEach(s => {
-    const { symbol, netVolume, rsiShort, rsiMain, rsiLong, macd, signal, bb, fundingRate, lastPrice, atr } = s;
+    const {
+      symbol, netVolume, rsiMain, rsiShort, rsiLong,
+      macd, signal, bb, fundingRate, fundingRateTrend,
+      lastPrice, openInterest, openInterestTrend,
+      volatilityProxy,
+    } = s;
+
     let newSignal = 'NEUTRAL';
     let confidence = 0;
 
     if (
       rsiMain !== null && macd !== null && signal !== null &&
-      bb !== null && fundingRate !== null && atr !== null
+      bb !== null && fundingRate !== null && openInterest !== null && volatilityProxy !== null
     ) {
-      // LONG signal conditions
+      const macdBullish = macd > signal;
+      const macdBearish = macd < signal;
+
+      const rsiOversoldZone = rsiMain < rsiOversold;
+      const rsiOverboughtZone = rsiMain > rsiOverbought;
+
+      const netVolLong = netVolume > netVolumeThresholds[symbol];
+      const netVolStrongLong = netVolume > netVolumeThresholds[symbol] * 2;
+      const netVolShort = netVolume < -netVolumeThresholds[symbol];
+      const netVolStrongShort = netVolume < -netVolumeThresholds[symbol] * 2;
+
+      const fundingLong = fundingRate > 0.001 || fundingRateTrend > 0;
+      const fundingShort = fundingRate < -0.001 || fundingRateTrend < 0;
+
+      const oiRising = openInterestTrend > 0;
+      const oiFalling = openInterestTrend < 0;
+
+      const priceBelowLowerBB = lastPrice < bb.lower;
+      const priceAboveUpperBB = lastPrice > bb.upper;
+
+      // LONG conditions
       if (
-        rsiMain < rsiOversold &&
-        rsiShort <= rsiMain &&
-        macd > signal &&
-        lastPrice < bb.lower &&
-        netVolume > netVolumeThresholds[symbol] &&
-        fundingRate < 0.01
+        rsiOversoldZone &&
+        macdBullish &&
+        (priceBelowLowerBB || netVolStrongLong) &&
+        fundingLong &&
+        netVolLong &&
+        oiRising
       ) {
         newSignal = 'LONG';
         confidence = 0.3;
-        if (rsiLong < rsiOversold) confidence += 0.2;
-        if (macd > 0) confidence += 0.2;
-        if (netVolume > netVolumeThresholds[symbol] * 2) confidence += 0.3;
+        if (rsiLong < rsiOversold) confidence += 0.15;
+        if (netVolStrongLong) confidence += 0.25;
+        if (oiRising) confidence += 0.15;
+        if (volatilityProxy > 0) confidence += 0.15;
       }
-      // SHORT signal conditions
+      // SHORT conditions
       else if (
-        rsiMain > rsiOverbought &&
-        rsiShort >= rsiMain &&
-        macd < signal &&
-        lastPrice > bb.upper &&
-        netVolume < -netVolumeThresholds[symbol] &&
-        fundingRate > -0.01
+        rsiOverboughtZone &&
+        macdBearish &&
+        (priceAboveUpperBB || netVolStrongShort) &&
+        fundingShort &&
+        netVolShort &&
+        oiFalling
       ) {
         newSignal = 'SHORT';
         confidence = 0.3;
-        if (rsiLong > rsiOverbought) confidence += 0.2;
-        if (macd < 0) confidence += 0.2;
-        if (netVolume < -netVolumeThresholds[symbol] * 2) confidence += 0.3;
+        if (rsiLong > rsiOverbought) confidence += 0.15;
+        if (netVolStrongShort) confidence += 0.25;
+        if (oiFalling) confidence += 0.15;
+        if (volatilityProxy > 0) confidence += 0.15;
       }
+
+      // Penalize conflicting signals
+      if (newSignal === 'LONG' && rsiOverboughtZone) confidence *= 0.7;
+      if (newSignal === 'SHORT' && rsiOversoldZone) confidence *= 0.7;
     }
 
     if (!signalState[symbol]) {
@@ -338,6 +450,7 @@ function generateSignal(summary) {
     const persistenceTime = now - state.lastChangeTimestamp;
     const cooldownTime = now - state.lastConfirmedTimestamp;
 
+    // Confirm signal if persisted and cooldown passed
     if (
       newSignal !== state.confirmedSignal &&
       newSignal !== 'NEUTRAL' &&
@@ -356,13 +469,54 @@ function generateSignal(summary) {
     } else if (state.signalStartTimestamp === 0) {
       state.signalStartTimestamp = now;
     }
-
-    signals[symbol] = state.confirmedSignal;
-    signalDurations[symbol] = state.signalStartTimestamp ? Math.floor((now - state.signalStartTimestamp) / 1000) : 0;
-    signalConfidences[symbol] = state.lastConfidence;
   });
 
+  const signals = {};
+  const signalDurations = {};
+  const signalConfidences = {};
+  for (const symbol of symbols.map(s => s.toUpperCase())) {
+    const state = signalState[symbol];
+    signals[symbol] = state.confirmedSignal;
+    signalDurations[symbol] = state.signalStartTimestamp ? Math.floor((Date.now() - state.signalStartTimestamp) / 1000) : 0;
+    signalConfidences[symbol] = state.lastConfidence;
+  }
+
   return { signals, signalDurations, signalConfidences };
+}
+
+function updateSignalWithWhaleTrades(symbol) {
+  const trades = tradesMap.get(symbol) || [];
+  const now = Date.now();
+  const recentWhaleTrades = trades.filter(t => t.classification === 'WHALE' && now - t.timestamp < 5 * 60 * 1000);
+  const whaleBuyVol = recentWhaleTrades.filter(t => t.side === 'BUY').reduce((a, t) => a + t.quantity, 0);
+  const whaleSellVol = recentWhaleTrades.filter(t => t.side === 'SELL').reduce((a, t) => a + t.quantity, 0);
+
+  if (!signalState[symbol]) return;
+
+  const state = signalState[symbol];
+
+  if (whaleBuyVol > largeTradeThresholds[symbol]) {
+    if (state.currentSignal === 'LONG') {
+      state.lastConfidence = Math.min(state.lastConfidence + 0.2, 1);
+    } else {
+      state.currentSignal = 'LONG';
+      state.lastChangeTimestamp = now;
+      state.lastConfidence = 0.5;
+      // Optional: immediate confirmation bypassing persistence
+      // state.confirmedSignal = 'LONG';
+      // state.lastConfirmedTimestamp = now;
+      // state.signalStartTimestamp = now;
+    }
+  } else if (whaleSellVol > largeTradeThresholds[symbol]) {
+    if (state.currentSignal === 'SHORT') {
+      state.lastConfidence = Math.min(state.lastConfidence + 0.2, 1);
+    } else {
+      state.currentSignal = 'SHORT';
+      state.lastChangeTimestamp = now;
+      state.lastConfidence = 0.5;
+      // Optional immediate confirmation as above
+    }
+  }
 }
 
 // News fetching (CryptoCompare + NewsAPI.org)
@@ -472,8 +626,8 @@ function connectWebSocket() {
         });
       }
     }
-  } catch (e) {
-    console.error('WS message parse error:', e);
+  } catch (err) {
+    console.error('Error parsing WebSocket message:', err, 'Raw message:', data);
   }
 });
 
@@ -497,54 +651,59 @@ setInterval(async () => {
     cleanOldTrades();
     const summary = aggregateData();
     await enrichSummaryWithOIandFunding(summary);
+
     const { signals, signalDurations, signalConfidences } = generateSignal(summary);
+
+    symbols.forEach(symbol => updateSignalWithWhaleTrades(symbol.toUpperCase()));
 
     io.emit('summary', { summary, signals, signalDurations, signalConfidences });
 
-    if (!global.lastNewsFetch || Date.now() - global.lastNewsFetch > 30000) {
-      global.lastNewsFetch = Date.now();
-      const news = await fetchAllNews();
-      io.emit('news', news);
-    }
+    // Emit cached news to clients
+    io.emit('news', cachedNews);
 
+    // Telegram alerts (your existing code)
     if (telegram.enabled) {
-  for (const symbol of Object.keys(signals)) {
-    const currentSignal = signals[symbol];
-    const confidence = signalConfidences[symbol];
-    if (!signalState[symbol]) continue;
-    if (signalState[symbol].lastTelegramSignal !== currentSignal) {
-      signalState[symbol].lastTelegramSignal = currentSignal;
-      if (currentSignal !== 'NEUTRAL') {
-        const data = summary.find(s => s.symbol === symbol);
-        const lastPrice = data ? data.lastPrice.toFixed(4) : 'N/A';
-        const netVol = data ? data.netVolume.toFixed(2) : 'N/A';
-        const rsi = data ? data.rsiMain.toFixed(2) : 'N/A';
-        const macd = data ? data.macd.toFixed(4) : 'N/A';
+      for (const symbol of Object.keys(signals)) {
+        const currentSignal = signals[symbol];
+        const confidence = signalConfidences[symbol];
+        const state = signalState[symbol];
+        if (!state) continue;
 
-        const msg = `*${symbol}* signal changed to *${currentSignal}* (Confidence: ${(confidence * 100).toFixed(0)}%)\n` +
-                    `Price: $${lastPrice}\n` +
-                    `Net Volume: ${netVol}\n` +
-                    `RSI: ${rsi}\n` +
-                    `MACD: ${macd}\n` +
-                    `Check your watchlist for more details.`;
+        if (state.lastTelegramSignal !== currentSignal) {
+          if (currentSignal !== 'NEUTRAL' && await canSendTelegramAlert(symbol)) {
+            state.lastTelegramSignal = currentSignal;
+            const data = summary.find(s => s.symbol === symbol);
+            const lastPrice = data ? data.lastPrice.toFixed(4) : 'N/A';
+            const netVol = data ? data.netVolume.toFixed(2) : 'N/A';
+            const rsi = data ? data.rsiMain.toFixed(2) : 'N/A';
+            const macd = data ? data.macd.toFixed(4) : 'N/A';
+            const duration = signalDurations[symbol] || 0;
 
-        try {
-          await axios.post(`https://api.telegram.org/bot${telegram.botToken}/sendMessage`, {
-            chat_id: telegram.chatId,
-            text: msg,
-            parse_mode: 'Markdown',
-          });
-        } catch (err) {
-          console.error('Telegram send error:', err.message);
+            const msg = `🚨 *${symbol}* signal changed to *${currentSignal}* (Confidence: ${(confidence * 100).toFixed(0)}%)\n` +
+                        `Price: $${lastPrice}\n` +
+                        `Net Volume: ${netVol}\n` +
+                        `RSI: ${rsi}\n` +
+                        `MACD: ${macd}\n` +
+                        `Duration: ${formatDuration(duration)}\n` +
+                        `Suggested Action: ${currentSignal === 'LONG' ? 'Consider LONG position' : 'Consider SHORT position'}\n` +
+                        `Check your watchlist for details.`;
+
+            await sendTelegramMessage(msg);
+          }
         }
       }
     }
-  }
-}
   } catch (err) {
     console.error('Error in main loop:', err);
   }
-}, 1000);
+}, 3000);
+
+function formatDuration(seconds) {
+  if (seconds < 0) return '';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
 
 io.on('connection', (socket) => {
   console.info('Client connected');
