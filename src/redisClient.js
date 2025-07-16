@@ -2,7 +2,6 @@ const redis = require('redis');
 
 let redisUrl = process.env.REDIS_URL;
 
-// If REDIS_URL is not set, fallback to localhost for local development
 if (!redisUrl) {
   if (process.env.NODE_ENV === 'production') {
     console.error('ERROR: REDIS_URL environment variable is not set in production.');
@@ -12,6 +11,8 @@ if (!redisUrl) {
     console.info('REDIS_URL not set, falling back to localhost Redis for development.');
   }
 }
+
+console.info('Connecting to Redis with URL:', redisUrl);
 
 const client = redis.createClient({
   url: redisUrl,
