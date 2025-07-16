@@ -52,8 +52,11 @@
     th[title]:after {
       content: " ⓘ";
       font-size: 12px;
-      color: #f0b90b;
-      margin-left: 4px;
+      color: #888;
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      transform: translateY(-50%);
     }
     .positive {
       color: #4caf50;
@@ -72,31 +75,28 @@
     #largeTrades {
       max-height: 200px;
       overflow-y: auto;
-      background: #222;
-      padding: 10px;
-      border-radius: 5px;
-      font-size: 13px;
+      border: 1px solid #444;
+      padding: 8px;
       margin-bottom: 20px;
-      white-space: pre-wrap;
-      font-family: monospace;
+      font-size: 13px;
+      background: #222;
+    }
+    .large-trade-buy {
+      color: #4caf50;
+      font-weight: bold;
+    }
+    .large-trade-sell {
+      color: #e53935;
+      font-weight: bold;
     }
     #newsContainer {
-      background: #222;
-      padding: 10px;
-      border-radius: 5px;
-      max-height: 200px;
+      max-height: 300px;
       overflow-y: auto;
-      font-size: 14px;
-      color: #eee;
+      border: 1px solid #444;
+      padding: 8px;
+      background: #222;
+      font-size: 13px;
       margin-bottom: 20px;
-    }
-    #newsContainer a {
-      color: #eee;
-      text-decoration: none;
-      font-weight: normal;
-    }
-    #newsContainer a:hover {
-      text-decoration: underline;
     }
     .news-symbol {
       color: #f0b90b; /* yellow */
@@ -104,8 +104,12 @@
       margin-right: 6px;
     }
     .news-title {
-      color: #eee; /* light gray */
+      color: #eee;
       font-weight: normal;
+      text-decoration: none;
+    }
+    .news-title:hover {
+      text-decoration: underline;
     }
     .sentiment-bullish {
       color: #4caf50;
@@ -121,14 +125,6 @@
       color: #ffb74d;
       font-weight: bold;
       margin-left: 6px;
-    }
-    .large-trade-buy {
-      color: #4caf50;
-      font-weight: bold;
-    }
-    .large-trade-sell {
-      color: #e53935;
-      font-weight: bold;
     }
     small.time-ago {
       color: #999;
@@ -150,34 +146,36 @@
       <tr>
         <th>Symbol</th>
         <th>Last Price</th>
-        <th>Buy Volume (3m)</th>
-        <th>Sell Volume (3m)</th>
-        <th>Net Volume (3m)</th>
-        <th>RSI (1m)</th>
-        <th>RSI (3m)</th>
-        <th>RSI (5m)</th>
-        <th>MACD</th>
-        <th>Signal Line</th>
-        <th>BB Lower</th>
-        <th>BB Middle</th>
-        <th>BB Upper</th>
-        <th>ATR</th>
-        <th>Vol Proxy</th>
-        <th>Open Interest</th>
-        <th>Funding Rate</th>
+        <th title="Buy Volume (3m)">Buy Volume (3m)</th>
+        <th title="Sell Volume (3m)">Sell Volume (3m)</th>
+        <th title="Net Volume (3m)">Net Volume (3m)</th>
+        <th title="RSI (1m)">RSI (1m)</th>
+        <th title="RSI (3m)">RSI (3m)</th>
+        <th title="RSI (5m)">RSI (5m)</th>
+        <th title="MACD">MACD</th>
+        <th title="Signal Line">Signal Line</th>
+        <th title="BB Lower">BB Lower</th>
+        <th title="BB Middle">BB Middle</th>
+        <th title="BB Upper">BB Upper</th>
+        <th title="ATR">ATR</th>
+        <th title="Volatility Proxy">Vol Proxy</th>
+        <th title="Open Interest">Open Interest</th>
+        <th title="Funding Rate">Funding Rate</th>
         <th title="Signal confidence % and active duration in minutes and seconds.">Signal ⓘ</th>
       </tr>
     </thead>
     <tbody id="summaryBody"></tbody>
   </table>
 
+  <h2>Large Trades</h2>
   <div id="largeTrades">No large trades yet.</div>
 
+  <h2>News</h2>
   <div id="newsContainer">Loading news...</div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    window.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', () => {
       const socket = io();
 
       const summaryBody = document.getElementById('summaryBody');
@@ -189,6 +187,10 @@
       function formatNumber(num, decimals = 2) {
         if (num === null || num === undefined) return 'N/A';
         return num.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+      }
+
+      function formatFixed(num, decimals = 2) {
+        return (num !== null && num !== undefined) ? num.toFixed(decimals) : 'N/A';
       }
 
       function formatDuration(seconds) {
@@ -216,6 +218,23 @@
             openInterest, fundingRate, atr, volatilityProxy,
           } = s;
 
+          const signalText = data.signals[symbol] || 'NEUTRAL';
+
+          // Signal color mapping (inline styles)
+          const signalColors = {
+            LONG: '#4caf50',      // green
+            SHORT: '#e53935',     // red
+            NEUTRAL: '#ccc',      // gray
+          };
+          const signalColor = signalColors[signalText] || '#ccc';
+
+          // Vol Proxy color: green if high volatility, red if low, gray default
+          let volProxyColor = '#ccc';
+          if (volatilityProxy !== null && volatilityProxy !== undefined) {
+            if (volatilityProxy > 0.01) volProxyColor = '#4caf50';
+            else if (volatilityProxy < 0.005) volProxyColor = '#e53935';
+          }
+
           const netClass = netVolume > 0 ? 'positive' : netVolume < 0 ? 'negative' : '';
           const rsiClassShort = rsiShort > 70 ? 'rsi-high' : rsiShort < 30 ? 'rsi-low' : '';
           const rsiClassMain = rsiMain > 70 ? 'rsi-high' : rsiMain < 30 ? 'rsi-low' : '';
@@ -229,32 +248,29 @@
           const bbLowerClass = bb && lastPrice < bb.lower ? 'negative' : '';
           const bbUpperClass = bb && lastPrice > bb.upper ? 'positive' : '';
 
-          const signalText = data.signals[symbol] || 'NEUTRAL';
-          const signalColor = signalText === 'LONG' ? 'positive' : signalText === 'SHORT' ? 'negative' : '';
-
           const duration = data.signalDurations[symbol] || 0;
           const confidence = data.signalConfidences[symbol] || 0;
 
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td>${symbol}</td>
-            <td>${formatNumber(lastPrice, 4)}</td>
-            <td class="positive">${formatNumber(buyVolume)}</td>
-            <td class="negative">${formatNumber(sellVolume)}</td>
-            <td class="${netClass}">${formatNumber(netVolume)}</td>
-            <td class="${rsiClassShort}">${formatNumber(rsiShort)}</td>
-            <td class="${rsiClassMain}">${formatNumber(rsiMain)}</td>
-            <td class="${rsiClassLong}">${formatNumber(rsiLong)}</td>
-            <td class="${macdClass}">${formatNumber(macd, 4)}</td>
-            <td class="${signalClass}">${formatNumber(signal, 4)}</td>
-            <td class="${bbLowerClass}">${bb ? formatNumber(bb.lower, 4) : 'N/A'}</td>
-            <td>${bb ? formatNumber(bb.middle, 4) : 'N/A'}</td>
-            <td class="${bbUpperClass}">${bb ? formatNumber(bb.upper, 4) : 'N/A'}</td>
-            <td class="${atrClass}">${formatNumber(atr, 4)}</td>
-            <td>${volatilityProxy !== null && volatilityProxy !== undefined ? volatilityProxy.toFixed(4) : 'N/A'}</td>
-            <td class="${openInterestClass}">${openInterest !== null && openInterest !== undefined ? openInterest.toLocaleString() : 'N/A'}</td>
-            <td class="${fundingRateClass}">${fundingRate !== null && fundingRate !== undefined ? (fundingRate * 100).toFixed(4) + '%' : 'N/A'}</td>
-            <td class="${signalColor}" title="Confidence: ${(confidence * 100).toFixed(0)}%, Active: ${formatDuration(duration)}">
+            <td>${formatFixed(lastPrice, 4)}</td>
+            <td class="positive">${formatFixed(buyVolume)}</td>
+            <td class="negative">${formatFixed(sellVolume)}</td>
+            <td class="${netClass}">${formatFixed(netVolume)}</td>
+            <td class="${rsiClassShort}">${formatFixed(rsiShort)}</td>
+            <td class="${rsiClassMain}">${formatFixed(rsiMain)}</td>
+            <td class="${rsiClassLong}">${formatFixed(rsiLong)}</td>
+            <td class="${macdClass}">${formatFixed(macd, 4)}</td>
+            <td class="${signalClass}">${formatFixed(signal, 4)}</td>
+            <td class="${bbLowerClass}">${bb ? formatFixed(bb.lower, 4) : 'N/A'}</td>
+            <td>${bb ? formatFixed((bb.lower + bb.upper) / 2, 4) : 'N/A'}</td>
+            <td class="${bbUpperClass}">${bb ? formatFixed(bb.upper, 4) : 'N/A'}</td>
+            <td class="${atrClass}">${formatFixed(atr, 4)}</td>
+            <td style="color:${volProxyColor}; font-weight:bold;">${volatilityProxy !== null ? volatilityProxy.toFixed(4) : 'N/A'}</td>
+            <td class="${openInterestClass}">${openInterest !== null ? openInterest.toLocaleString() : 'N/A'}</td>
+            <td class="${fundingRateClass}">${fundingRate !== null ? (fundingRate * 100).toFixed(4) + '%' : 'N/A'}</td>
+            <td style="color:${signalColor}; font-weight:bold;" title="Confidence: ${(confidence * 100).toFixed(0)}%, Active: ${formatDuration(duration)}">
               ${signalText} (${formatDuration(duration)}, ${(confidence * 100).toFixed(0)}%)
             </td>
           `;
@@ -324,6 +340,11 @@
           return;
         }
         newsContainer.innerHTML = '';
+        // Sort news by time descending if time available
+        newsItems.sort((a, b) => {
+          if (a.time && b.time) return new Date(b.time) - new Date(a.time);
+          return 0;
+        });
         newsItems.forEach(item => {
           const div = document.createElement('div');
           div.style.marginBottom = '8px';
