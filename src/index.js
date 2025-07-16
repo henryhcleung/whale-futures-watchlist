@@ -508,27 +508,39 @@ setInterval(async () => {
     }
 
     if (telegram.enabled) {
-      for (const symbol of Object.keys(signals)) {
-        const currentSignal = signals[symbol];
-        const confidence = signalConfidences[symbol];
-        if (!signalState[symbol]) continue;
-        if (signalState[symbol].lastTelegramSignal !== currentSignal) {
-          signalState[symbol].lastTelegramSignal = currentSignal;
-          if (currentSignal !== 'NEUTRAL') {
-            const msg = `*${symbol}* signal changed to *${currentSignal}* (Confidence: ${(confidence * 100).toFixed(0)}%).\nCheck your watchlist for details.`;
-            try {
-              await axios.post(`https://api.telegram.org/bot${telegram.botToken}/sendMessage`, {
-                chat_id: telegram.chatId,
-                text: msg,
-                parse_mode: 'Markdown',
-              });
-            } catch (err) {
-              console.error('Telegram send error:', err.message);
-            }
-          }
+  for (const symbol of Object.keys(signals)) {
+    const currentSignal = signals[symbol];
+    const confidence = signalConfidences[symbol];
+    if (!signalState[symbol]) continue;
+    if (signalState[symbol].lastTelegramSignal !== currentSignal) {
+      signalState[symbol].lastTelegramSignal = currentSignal;
+      if (currentSignal !== 'NEUTRAL') {
+        const data = summary.find(s => s.symbol === symbol);
+        const lastPrice = data ? data.lastPrice.toFixed(4) : 'N/A';
+        const netVol = data ? data.netVolume.toFixed(2) : 'N/A';
+        const rsi = data ? data.rsiMain.toFixed(2) : 'N/A';
+        const macd = data ? data.macd.toFixed(4) : 'N/A';
+
+        const msg = `*${symbol}* signal changed to *${currentSignal}* (Confidence: ${(confidence * 100).toFixed(0)}%)\n` +
+                    `Price: $${lastPrice}\n` +
+                    `Net Volume: ${netVol}\n` +
+                    `RSI: ${rsi}\n` +
+                    `MACD: ${macd}\n` +
+                    `Check your watchlist for more details.`;
+
+        try {
+          await axios.post(`https://api.telegram.org/bot${telegram.botToken}/sendMessage`, {
+            chat_id: telegram.chatId,
+            text: msg,
+            parse_mode: 'Markdown',
+          });
+        } catch (err) {
+          console.error('Telegram send error:', err.message);
         }
       }
     }
+  }
+}
   } catch (err) {
     console.error('Error in main loop:', err);
   }
